@@ -1,4 +1,6 @@
 using System.IO.Compression;
+using System.Net.Http.Json;
+using System.Text.Json;
 
 namespace ReDOS;
 
@@ -34,9 +36,80 @@ internal static class ConsoleCore
     internal static bool IsAvailable => Find() is not null;
 
     /// <summary>
-    /// Register a console core the user supplied, from either a zip or a bare exe. There is no
-    /// canonical download for this one, so ReDOS never fetches it behind the user's back.
+    /// MS-DOS Player states no redistribution terms, so ReDOS does not ship it inside the release
+    /// archive. It is fetched to the user's own machine on first use instead, which needs no
+    /// decision from them and redistributes nothing.
     /// </summary>
+    private const string SourceRepo = "roytam1/msdos-player";
+
+    /// <summary>
+    /// The CPU the emulated machine presents. 486 runs everything a text-mode DOS program is likely
+    /// to use, including 32-bit instructions, without the slowdown of the later cores.
+    /// </summary>
+    private const string PreferredBuild = "Release_i486-x64";
+
+    /// <summary>Locate the console core, downloading it on first use.</summary>
+    internal static async Task<string> EnsureAsync(Action<string>? progress = null, bool force = false, CancellationToken ct = default)
+    {
+        if (!force)
+        {
+            string? existing = Find();
+            if (existing is not null) return existing;
+        }
+
+        progress?.Invoke("Looking up the console DOS core...");
+        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("ReDOS");
+
+        var releases = await http.GetFromJsonAsync<JsonElement>(
+            $"https://api.github.com/repos/{SourceRepo}/releases", ct);
+
+        string? url = PickAsset(releases)
+            ?? throw new InvalidOperationException($"No console core archive found in the {SourceRepo} releases.");
+
+        progress?.Invoke("Downloading console DOS core...");
+        string temp = Path.Combine(Path.GetTempPath(), $"redos-console-{Guid.NewGuid():N}.zip");
+        try
+        {
+            await using (var netStream = await http.GetStreamAsync(url, ct))
+            await using (var fileStream = File.Create(temp))
+            {
+                await netStream.CopyToAsync(fileStream, ct);
+            }
+
+            progress?.Invoke("Installing console DOS core...");
+            return InstallFrom(temp);
+        }
+        finally
+        {
+            try { File.Delete(temp); } catch { /* best effort */ }
+        }
+    }
+
+    private static string? PickAsset(JsonElement releases)
+    {
+        foreach (var release in releases.EnumerateArray())
+        {
+            if (!release.TryGetProperty("assets", out var assets)) continue;
+
+            string? best = null;
+            foreach (var asset in assets.EnumerateArray())
+            {
+                string name = (asset.GetProperty("name").GetString() ?? "").ToLowerInvariant();
+                if (!name.EndsWith(".zip")) continue;
+
+                // The newer toolchain build first; the older one is a usable fallback.
+                if (name.Contains("vc13")) return asset.GetProperty("browser_download_url").GetString();
+                best ??= asset.GetProperty("browser_download_url").GetString();
+            }
+
+            if (best is not null) return best;
+        }
+
+        return null;
+    }
+
+    /// <summary>Register a console core from either a distribution zip or a bare exe.</summary>
     internal static string InstallFrom(string path)
     {
         Directory.CreateDirectory(AppPaths.Core);
@@ -49,11 +122,7 @@ internal static class ConsoleCore
             try
             {
                 ZipFile.ExtractToDirectory(path, staging);
-                string source = Directory
-                    .EnumerateFiles(staging, "*.exe", SearchOption.AllDirectories)
-                    .OrderByDescending(p => Path.GetFileName(p).Equals(CoreExeName, StringComparison.OrdinalIgnoreCase))
-                    .ThenByDescending(p => p.Contains("64", StringComparison.Ordinal))
-                    .FirstOrDefault()
+                string source = SelectBuild(staging)
                     ?? throw new InvalidOperationException("No executable was found inside the archive.");
 
                 File.Copy(source, destination, overwrite: true);
@@ -71,6 +140,23 @@ internal static class ConsoleCore
 
         AppPaths.Log($"console core installed: {destination}");
         return destination;
+    }
+
+    /// <summary>
+    /// The archive ships one build per emulated CPU. Pick the 64-bit host build of the CPU we want,
+    /// then fall back through anything 64-bit rather than failing on a layout change.
+    /// </summary>
+    private static string? SelectBuild(string root)
+    {
+        var candidates = Directory.EnumerateFiles(root, "*.exe", SearchOption.AllDirectories).ToList();
+        if (candidates.Count == 0) return null;
+
+        return candidates
+            .OrderByDescending(p => p.Contains(PreferredBuild, StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(p => p.Contains("-x64", StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(p => p.Contains("i386", StringComparison.OrdinalIgnoreCase))
+            .ThenBy(p => p.Contains("Win32", StringComparison.OrdinalIgnoreCase))
+            .First();
     }
 
     /// <summary>

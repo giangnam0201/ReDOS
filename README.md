@@ -29,7 +29,7 @@ ReDOS does not pretend otherwise. What it removes is the *setup*, not the emulat
 - **Keeps one persistent machine** — every program shares a single sandbox drive C:, so files you
   create in one program are there in the next one.
 - **Brings the program's data files along** (see [Dependencies](#dependencies)).
-- **Opens everything in a window**, never full-screen.
+- **Opens in a terminal by default** - Windows Terminal, sized to 80x25, never full-screen.
 
 ## Install
 
@@ -79,34 +79,58 @@ sandbox.
 
 ## The DOS machine in a terminal
 
-`redos` opens the machine. How it appears depends on which core is available:
+**DOS programs open in a terminal by default.** ReDOS launches a Windows Terminal window sized to
+80x25 and runs the program inside it with the console core — a real terminal, with your colour
+scheme, font, copy/paste and splits. No emulator window, no menu bar. Where Windows Terminal is not
+installed, a classic console window is used instead.
+
+There are two cores, and ReDOS picks between them:
 
 | Core | Where DOS appears | Handles |
 |---|---|---|
-| Graphical (bundled, DOSBox-X) | Its own window | Everything, including games, graphics and sound |
-| Console (optional, msdos-player) | Inside a real terminal — Windows Terminal, cmd or PowerShell | Text-mode programs only |
-
-The graphical core cannot draw inside a terminal tab: it renders through SDL into its own window.
-For text-mode work where you *want* a real terminal — Windows Terminal tabs, splits, copy/paste,
-your own colour scheme — install a console core:
+| **Console** (msdos-player) — default | A real terminal window | Text-mode and TUI programs |
+| **Graphical** (DOSBox-X) — `--gui` | Its own window | Everything: graphics modes, sound, games |
 
 ```
-redos console-core --install <path to msdos-player.exe or its zip>
+redos run WP.EXE          text-mode program in a terminal
+redos run DOOM.EXE --gui  graphics and sound, in the graphical core's window
 ```
 
-After that `redos` opens a Windows Terminal tab that *is* the DOS machine, and `redos run --console
-FOO.EXE` runs a text-mode program in your terminal. Both cores share the same sandbox drive C:.
-ReDOS never downloads the console core by itself, because it has no canonical release to fetch.
+### What the terminal cannot do
+
+The console core is a DOS emulator hosted in a console, and its author is explicit that
+**graphics and sound hardware are not implemented**. So in a terminal you get text mode, colour,
+box-drawing and direct writes to the B800 text buffer — which covers TUI applications and text
+games — but **no sound at all**, and no VGA/EGA graphics modes. There is no way around this: a
+terminal has no framebuffer and no audio device to emulate against. Anything that needs sound or
+graphics has to use `--gui`.
+
+The console core is downloaded to your machine on first use rather than shipped inside the release
+archive, because MS-DOS Player states no redistribution terms. This costs one download the first
+time and nothing after that. Manage it with `redos console-core [--update | --install PATH]`.
+
+### Drive letters in the terminal
+
+The console core runs DOS programs against the real Windows filesystem, so ReDOS maps the sandbox
+to a spare drive letter for the session (the first free letter from M onward, overridable with
+`REDOS_DRIVE`). Inside a terminal session your program sits at `M:\PROGRAMS\<NAME>` rather than
+`C:\PROGRAMS\<NAME>`; the files are the same ones, and the letter is released when the session ends.
+The graphical core has no such limitation and mounts the sandbox as `C:`.
+
+A bare `redos` in a terminal needs a DOS shell to sit at, and the console core has no built-in one.
+Drop a `COMMAND.COM` into `<sandbox>\DOS\` and you get a real DOS prompt in your terminal; without
+one, ReDOS opens the graphical machine, which has its own shell.
 
 ## Commands
 
 ```
-redos                        Open the MS-DOS machine.
+redos                        Open the MS-DOS machine in a terminal window.
 redos run [OPTS] FILE [ARGS...]
-                             Run FILE. Non-DOS programs are passed straight to Windows.
+                             Run FILE in a terminal. Non-DOS programs go to Windows.
+                               --gui         use the graphical core's window instead
+                                             (needed for graphics and sound)
                                --force-dos   run as DOS even if the header disagrees
                                --no-import   leave in place, mounted as D:, not imported
-                               --console     run in this terminal instead of a window
                                --stay        stay at the DOS prompt after it exits
                                --dry-run     print the machine config instead of running
 redos manager                Open the sandbox manager.
@@ -119,7 +143,7 @@ redos detect FILE            Report what kind of executable FILE is.
 redos status                 Show what is installed and where.
 redos install [--intercept-exe] / redos uninstall
 redos core [--update]        Show or refresh the graphical DOS core.
-redos console-core --install PATH
+redos console-core [--update | --install PATH]
 ```
 
 ### `--intercept-exe`

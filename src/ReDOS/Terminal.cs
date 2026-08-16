@@ -3,13 +3,13 @@ using System.Diagnostics;
 namespace ReDOS;
 
 /// <summary>
-/// Opens the DOS machine in a terminal window. Windows Terminal is preferred when it is installed
-/// (it is the default on Windows 11 and a normal install on Windows 10); otherwise ReDOS falls back
-/// to a classic console window, which every Windows 10 machine has.
+/// Runs DOS inside a real terminal. Windows Terminal is preferred when it is installed (the default
+/// on Windows 11, a normal install on Windows 10); otherwise a classic console window is used, which
+/// every Windows 10 machine has.
 /// </summary>
 internal static class Terminal
 {
-    /// <summary>True when a console-hosted DOS session is actually possible on this machine.</summary>
+    /// <summary>True when a console-hosted DOS session is possible without downloading anything.</summary>
     internal static bool CanHostDosSession => ConsoleCore.IsAvailable;
 
     internal static string? FindWindowsTerminal()
@@ -26,12 +26,14 @@ internal static class Terminal
     }
 
     /// <summary>
-    /// Launch a new terminal window running <c>ReDOS session</c>, which takes over that console and
-    /// turns it into the DOS machine.
+    /// Open a terminal window running <c>ReDOS session</c>, which takes over that console and turns
+    /// it into the DOS machine.
     /// </summary>
     internal static int OpenDosSession(string? programPath, IReadOnlyList<string> programArgs, Reporter report)
     {
         Sandbox.Ensure();
+
+        string title = programPath is null ? "MS-DOS" : Path.GetFileNameWithoutExtension(programPath);
 
         var innerArgs = new List<string> { "session" };
         if (programPath is not null)
@@ -46,9 +48,15 @@ internal static class Terminal
         if (wt is not null)
         {
             psi = new ProcessStartInfo(wt) { UseShellExecute = false };
+            // -w -1 forces a new window rather than a tab in whatever window happens to be focused.
+            psi.ArgumentList.Add("-w");
+            psi.ArgumentList.Add("-1");
             psi.ArgumentList.Add("new-tab");
             psi.ArgumentList.Add("--title");
-            psi.ArgumentList.Add(programPath is null ? "MS-DOS" : Path.GetFileNameWithoutExtension(programPath));
+            psi.ArgumentList.Add(title);
+            // DOS text mode is 80x25; ask for exactly that so nothing wraps or leaves dead space.
+            psi.ArgumentList.Add("--size");
+            psi.ArgumentList.Add("80,25");
             psi.ArgumentList.Add(AppPaths.ExecutablePath);
             foreach (string arg in innerArgs) psi.ArgumentList.Add(arg);
         }
@@ -58,7 +66,7 @@ internal static class Terminal
             psi = new ProcessStartInfo("cmd.exe") { UseShellExecute = false };
             psi.ArgumentList.Add("/c");
             psi.ArgumentList.Add("start");
-            psi.ArgumentList.Add(programPath is null ? "MS-DOS" : Path.GetFileNameWithoutExtension(programPath));
+            psi.ArgumentList.Add(title);
             psi.ArgumentList.Add(AppPaths.ExecutablePath);
             foreach (string arg in innerArgs) psi.ArgumentList.Add(arg);
         }
@@ -76,34 +84,62 @@ internal static class Terminal
     }
 
     /// <summary>
-    /// Run the DOS session inside the console this process already owns. This is what the terminal
-    /// window launched above ends up executing.
+    /// Become the DOS machine inside the console this process already owns — this is what the
+    /// terminal window opened above ends up executing.
     /// </summary>
     internal static int RunInThisConsole(string? programPath, IReadOnlyList<string> programArgs, Reporter report)
     {
         Sandbox.Ensure();
 
-        var command = ConsoleCore.BuildCommand(programPath, programArgs);
-        if (command is null)
+        string core;
+        try
+        {
+            core = ConsoleCore.EnsureAsync(report.Status).GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
         {
             report.Error(
-                "No console DOS core is installed, so ReDOS cannot turn this terminal into a DOS machine.\n" +
-                "Install one with:  ReDOS console-core --install <path to msdos-player.exe or its zip>\n" +
+                $"The console DOS core could not be obtained ({ex.Message}).\n" +
                 "Opening the graphical DOS machine instead.");
-
             return Launcher.RunPrompt(report);
         }
 
-        var psi = new ProcessStartInfo(command.Value.Exe)
+        // Without a program there is nothing for the console core to run: unlike the graphical core
+        // it has no built-in shell, so it needs a real COMMAND.COM.
+        if (programPath is null)
+        {
+            programPath = FindDosShell();
+            if (programPath is null)
+            {
+                report.Error(
+                    "The console DOS machine needs a DOS shell to sit at, and no COMMAND.COM was found in\n" +
+                    $"{Sandbox.DosDir}. Copy one there for a terminal prompt.\n" +
+                    "Opening the graphical DOS machine instead.");
+                return Launcher.RunPrompt(report);
+            }
+        }
+
+        // Give DOS a clean drive root: the sandbox becomes a drive letter of its own, so programs
+        // see PROGRAMS\FOO at the root instead of a long Windows path.
+        using var drive = SubstDrive.Create(Sandbox.Root);
+
+        string workingDirectory = Path.GetDirectoryName(programPath) ?? Sandbox.Root;
+        string program = programPath;
+
+        if (drive is not null && Sandbox.Contains(programPath))
+        {
+            workingDirectory = drive.Translate(workingDirectory);
+            program = Path.GetFileName(programPath);
+        }
+
+        var psi = new ProcessStartInfo(core)
         {
             UseShellExecute = false,
-            WorkingDirectory = programPath is not null
-                ? Path.GetDirectoryName(programPath)!
-                : Sandbox.Root,
+            WorkingDirectory = workingDirectory,
         };
-        foreach (string arg in command.Value.Args) psi.ArgumentList.Add(arg);
+        psi.ArgumentList.Add(program);
+        foreach (string arg in programArgs) psi.ArgumentList.Add(arg);
 
-        // The sandbox is drive C: here too, so a console session sees exactly the same files.
         psi.Environment["TEMP"] = Sandbox.TempDir;
         psi.Environment["TMP"] = Sandbox.TempDir;
 
@@ -119,6 +155,18 @@ internal static class Terminal
             report.Error($"The console DOS core failed to start: {ex.Message}");
             return 3;
         }
+    }
+
+    /// <summary>A COMMAND.COM the user has dropped into the sandbox, if there is one.</summary>
+    private static string? FindDosShell()
+    {
+        foreach (string directory in new[] { Sandbox.DosDir, Sandbox.Root })
+        {
+            string candidate = Path.Combine(directory, "COMMAND.COM");
+            if (File.Exists(candidate)) return candidate;
+        }
+
+        return null;
     }
 
     private static string? SearchPath(string fileName)
@@ -140,5 +188,91 @@ internal static class Terminal
         }
 
         return null;
+    }
+}
+
+/// <summary>
+/// A temporary drive letter mapped to a folder, so DOS sees a drive root rather than a long path.
+/// Removed again when the session ends.
+/// </summary>
+internal sealed class SubstDrive : IDisposable
+{
+    private readonly string _target;
+
+    internal string Letter { get; }
+
+    private SubstDrive(string letter, string target)
+    {
+        Letter = letter;
+        _target = target;
+    }
+
+    /// <summary>Map <paramref name="folder"/> to a free drive letter, or null if none could be taken.</summary>
+    internal static SubstDrive? Create(string folder)
+    {
+        string? letter = Environment.GetEnvironmentVariable("REDOS_DRIVE")?.TrimEnd(':', '\\');
+        var candidates = letter is { Length: 1 }
+            ? [letter.ToUpperInvariant()]
+            : new[] { "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y" };
+
+        var taken = DriveInfo.GetDrives()
+            .Select(d => d.Name[..1].ToUpperInvariant())
+            .ToHashSet();
+
+        foreach (string candidate in candidates)
+        {
+            if (taken.Contains(candidate)) continue;
+            if (!RunSubst($"{candidate}:", folder)) continue;
+            return new SubstDrive(candidate, Path.GetFullPath(folder));
+        }
+
+        AppPaths.Log("no free drive letter for the sandbox; using full paths instead");
+        return null;
+    }
+
+    /// <summary>Rewrite a path inside the mapped folder to its drive-letter equivalent.</summary>
+    internal string Translate(string path)
+    {
+        string full = Path.GetFullPath(path);
+        if (!full.StartsWith(_target, StringComparison.OrdinalIgnoreCase)) return full;
+
+        string relative = full[_target.Length..].TrimStart(Path.DirectorySeparatorChar);
+        return $"{Letter}:\\{relative}";
+    }
+
+    public void Dispose()
+    {
+        try { RunSubst($"{Letter}:", null); }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            AppPaths.Log($"could not release drive {Letter}: {ex.Message}");
+        }
+    }
+
+    private static bool RunSubst(string drive, string? folder)
+    {
+        var psi = new ProcessStartInfo("subst")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+
+        psi.ArgumentList.Add(drive);
+        if (folder is null) psi.ArgumentList.Add("/D");
+        else psi.ArgumentList.Add(folder);
+
+        try
+        {
+            using var process = Process.Start(psi);
+            if (process is null) return false;
+            process.WaitForExit(10_000);
+            return process.HasExited && process.ExitCode == 0;
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
     }
 }

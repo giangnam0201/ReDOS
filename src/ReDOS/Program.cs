@@ -7,12 +7,13 @@ internal static class Program
     private const string Usage = """
         ReDOS - run MS-DOS programs on modern Windows, with nothing to set up.
 
-          redos                        Open the MS-DOS machine (a terminal window, the sandbox as C:).
+          redos                        Open the MS-DOS machine in a terminal window.
           redos run [OPTS] FILE [ARGS...]
-                                       Run FILE. Non-DOS programs are passed straight to Windows.
+                                       Run FILE in a terminal. Non-DOS programs go to Windows.
+                                         --gui         use the graphical core's own window instead
+                                                       (needed for graphics and sound)
                                          --force-dos   run it as DOS even if the header disagrees
                                          --no-import   leave it in place, mounted as D:, not imported
-                                         --console     run it in this terminal instead of a window
                                          --stay        stay at the DOS prompt after it exits
                                          --dry-run     print the machine config instead of running
           redos manager                Open the sandbox manager (add, run and delete programs).
@@ -27,8 +28,8 @@ internal static class Program
                                        Add or remove the file associations. --intercept-exe also
                                        routes double-clicked .exe files through ReDOS (reversible).
           redos core [--update]        Show or refresh the graphical DOS core.
-          redos console-core --install PATH
-                                       Register a console-hosted DOS core (msdos-player).
+          redos console-core [--update | --install PATH]
+                                       Show, fetch or replace the console DOS core.
           redos --version
         """;
 
@@ -95,7 +96,7 @@ internal static class Program
     {
         EnsureFirstRun(report);
 
-        if (args.Contains("--window") || !Terminal.CanHostDosSession)
+        if (args.Contains("--window") || args.Contains("--gui"))
             return Launcher.RunPrompt(report);
 
         return Terminal.OpenDosSession(programPath: null, [], report);
@@ -131,7 +132,6 @@ internal static class Program
     private static int RunCommand(string[] args, Reporter report)
     {
         var options = new RunOptions();
-        bool console = false;
         var remaining = new List<string>(args.Length);
 
         for (int i = 0; i < args.Length; i++)
@@ -145,7 +145,8 @@ internal static class Program
                     case "--no-import": options = options with { NoImport = true }; continue;
                     case "--stay": options = options with { StayOpen = true }; continue;
                     case "--dry-run": options = options with { DryRun = true }; continue;
-                    case "--console": console = true; continue;
+                    case "--console" or "--terminal": options = options with { Graphical = false }; continue;
+                    case "--gui" or "--window" or "-g": options = options with { Graphical = true }; continue;
                 }
             }
 
@@ -155,14 +156,6 @@ internal static class Program
         if (remaining.Count == 0) return Print(report, Usage, exitCode: 2);
 
         EnsureFirstRun(report);
-
-        if (console)
-        {
-            string target = Path.GetFullPath(remaining[0]);
-            var imported = Sandbox.Contains(target) ? null : (Sandbox.ImportResult?)Sandbox.Import(target);
-            return Terminal.OpenDosSession(imported?.HostPath ?? target, remaining[1..], report);
-        }
-
         return Launcher.Run(remaining[0], remaining[1..], options, report);
     }
 
@@ -321,10 +314,24 @@ internal static class Program
         int index = Array.IndexOf(args, "--install");
         if (index < 0 || index + 1 >= args.Length)
         {
-            string? existing = ConsoleCore.Find();
-            return Print(report, existing is null
-                ? "No console core installed. Install one with:\n  redos console-core --install <path to msdos-player.exe or its zip>"
-                : $"Console core: {existing}");
+            if (!args.Contains("--update"))
+            {
+                string? existing = ConsoleCore.Find();
+                return Print(report, existing is null
+                    ? "No console core installed yet; it is fetched automatically the first time you run a DOS program."
+                    : $"Console core: {existing}");
+            }
+
+            try
+            {
+                string fetched = ConsoleCore.EnsureAsync(report.Status, force: true).GetAwaiter().GetResult();
+                return Print(report, $"Console core updated: {fetched}");
+            }
+            catch (Exception ex)
+            {
+                report.Error($"Could not update the console core: {ex.Message}");
+                return 3;
+            }
         }
 
         try

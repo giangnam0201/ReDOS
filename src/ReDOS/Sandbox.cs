@@ -110,12 +110,16 @@ internal static class Sandbox
         string sourceDir = Path.GetDirectoryName(source) ?? throw new InvalidOperationException("No containing folder.");
         bool copyFolder = ShouldCopyWholeFolder(sourceDir);
 
-        // Re-running the same file must land on the existing copy, not pile up FOO, FOO2, FOO3...
-        string? name = LookupImportedName(source);
+        // Re-importing must land on the existing copy, not pile up FOO, FOO2, FOO3. When the whole
+        // folder comes across, the folder is the identity: PLAY.BAT and GAME.EXE next to each other
+        // are one program, not two.
+        string identity = copyFolder ? sourceDir : source;
+
+        string? name = LookupImportedName(identity);
         if (name is null || !Directory.Exists(Path.Combine(ProgramsDir, name)))
         {
             name = MakeProgramName(preferredName ?? (copyFolder ? Path.GetFileName(sourceDir) : Path.GetFileNameWithoutExtension(source)));
-            RecordImportedName(source, name);
+            RecordImportedName(identity, name);
         }
 
         string destination = Path.Combine(ProgramsDir, name);

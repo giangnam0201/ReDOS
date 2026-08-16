@@ -24,6 +24,12 @@ internal sealed record RunOptions
 
     /// <summary>Print the machine configuration that would be used and stop. For troubleshooting.</summary>
     internal bool DryRun { get; init; }
+
+    /// <summary>
+    /// Use the graphical core's own window instead of a terminal. Needed for anything with graphics
+    /// or sound, since the console core emulates neither.
+    /// </summary>
+    internal bool Graphical { get; init; }
 }
 
 internal static class Launcher
@@ -109,6 +115,11 @@ internal static class Launcher
             report.Info($"# {profile}\n\n{File.ReadAllText(profile)}");
             return 0;
         }
+
+        // A terminal is the default home for a DOS program. The session falls back to the graphical
+        // core by itself if the console core cannot be had, so this is always safe to try.
+        if (!options.Graphical && SelectBackend() == Backend.BundledCore)
+            return Terminal.OpenDosSession(programPath, programArgs, report);
 
         return SelectBackend() == Backend.NativeNtvdm
             ? RunViaNtvdm(programPath, programArgs, report)
