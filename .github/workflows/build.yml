@@ -75,11 +75,12 @@ jobs:
           if (-not $asset) { throw 'No suitable DOSBox-X asset found in the latest release.' }
           Write-Host "Core asset: $($asset.name) ($($release.tag_name))"
 
-          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile core.zip
-          Expand-Archive -Path core.zip -DestinationPath core-staging -Force
+          # Staged outside the workspace root so the download never lands in dist/.
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "$env:RUNNER_TEMP/core.zip"
+          Expand-Archive -Path "$env:RUNNER_TEMP/core.zip" -DestinationPath "$env:RUNNER_TEMP/core-staging" -Force
 
           # Distribution zips carry several builds side by side; keep the 64-bit one.
-          $exe = Get-ChildItem core-staging -Recurse -Filter dosbox-x.exe |
+          $exe = Get-ChildItem "$env:RUNNER_TEMP/core-staging" -Recurse -Filter dosbox-x.exe |
             Sort-Object -Property @{ Expression = {
                 $p = $_.FullName.ToLower(); $score = 0
                 if ($p -match 'x64|win64|64bit') { $score += 10 }
@@ -101,25 +102,24 @@ jobs:
           $ErrorActionPreference = 'Stop'
           Copy-Item README.md, LICENSE publish/ -Force
           Remove-Item publish/*.pdb -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
 
           $name = "ReDOS-${{ steps.version.outputs.version }}-win-x64"
-          Compress-Archive -Path publish/* -DestinationPath "$name.zip" -Force
+          Compress-Archive -Path publish/* -DestinationPath "dist/$name.zip" -Force
 
           # Standalone exe for people who would rather let ReDOS fetch the core itself.
-          Copy-Item publish/ReDOS.exe "ReDOS-${{ steps.version.outputs.version }}-standalone.exe" -Force
+          Copy-Item publish/ReDOS.exe "dist/ReDOS-${{ steps.version.outputs.version }}-standalone.exe" -Force
 
-          Get-FileHash *.zip, *.exe -Algorithm SHA256 |
+          Get-FileHash dist/* -Algorithm SHA256 |
             ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } |
-            Out-File SHA256SUMS.txt -Encoding utf8
-          Get-Content SHA256SUMS.txt
+            Out-File dist/SHA256SUMS.txt -Encoding utf8
+          Get-ChildItem dist | Select-Object Name, Length
+          Get-Content dist/SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
         with:
           name: ReDOS-${{ steps.version.outputs.version }}
-          path: |
-            *.zip
-            *.exe
-            SHA256SUMS.txt
+          path: dist/*
 
       - name: Publish tagged release
         if: github.ref_type == 'tag'
@@ -127,10 +127,7 @@ jobs:
         with:
           name: ReDOS ${{ steps.version.outputs.version }}
           generate_release_notes: true
-          files: |
-            *.zip
-            *.exe
-            SHA256SUMS.txt
+          files: dist/*
 
       - name: Publish rolling "latest" release
         if: github.ref == 'refs/heads/main'
@@ -144,7 +141,4 @@ jobs:
 
             - **ReDOS-*-win-x64.zip** — ReDOS plus the bundled DOS core. Unzip, run `ReDOS.exe` once, done.
             - **ReDOS-*-standalone.exe** — just ReDOS; downloads the core by itself on first use.
-          files: |
-            *.zip
-            *.exe
-            SHA256SUMS.txt
+          files: dist/*
