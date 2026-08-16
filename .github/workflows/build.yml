@@ -110,9 +110,11 @@ jobs:
           # Standalone exe for people who would rather let ReDOS fetch the core itself.
           Copy-Item publish/ReDOS.exe "dist/ReDOS-${{ steps.version.outputs.version }}-standalone.exe" -Force
 
-          Get-FileHash dist/* -Algorithm SHA256 |
-            ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } |
-            Out-File dist/SHA256SUMS.txt -Encoding utf8
+          # Collect the hashes before writing, so the sums file is never hashing itself.
+          $sums = Get-ChildItem dist -File |
+            Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" }
+          $sums | Out-File dist/SHA256SUMS.txt -Encoding utf8
           Get-ChildItem dist | Select-Object Name, Length
           Get-Content dist/SHA256SUMS.txt
 
