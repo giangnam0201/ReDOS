@@ -48,15 +48,19 @@ internal static class Terminal
         if (wt is not null)
         {
             psi = new ProcessStartInfo(wt) { UseShellExecute = false };
-            // -w -1 forces a new window rather than a tab in whatever window happens to be focused.
+
+            // Window-level options must come before the subcommand: after "new-tab" they are parsed
+            // as part of the command line to run, not as options.
+            //   -w -1     force a new window instead of a tab in whatever window has focus
+            //   --size    DOS text mode is 80x25, so nothing wraps or leaves dead space
             psi.ArgumentList.Add("-w");
             psi.ArgumentList.Add("-1");
+            psi.ArgumentList.Add("--size");
+            psi.ArgumentList.Add("80,25");
+
             psi.ArgumentList.Add("new-tab");
             psi.ArgumentList.Add("--title");
             psi.ArgumentList.Add(title);
-            // DOS text mode is 80x25; ask for exactly that so nothing wraps or leaves dead space.
-            psi.ArgumentList.Add("--size");
-            psi.ArgumentList.Add("80,25");
             psi.ArgumentList.Add(AppPaths.ExecutablePath);
             foreach (string arg in innerArgs) psi.ArgumentList.Add(arg);
         }
