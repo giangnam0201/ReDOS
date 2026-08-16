@@ -37,9 +37,14 @@ jobs:
             $version = "0.1.0-build.$env:GITHUB_RUN_NUMBER"
             $assembly = "0.1.$env:GITHUB_RUN_NUMBER"
           }
+          # The rolling release reuses one set of filenames so its download links never move and
+          # stale builds cannot pile up as extra assets.
+          if ($env:GITHUB_REF_TYPE -eq 'tag') { $label = $version } else { $label = 'latest' }
+
           "version=$version"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "assembly=$assembly" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          Write-Host "Version: $version (assembly $assembly)"
+          "label=$label"       | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Version: $version (assembly $assembly, assets labelled $label)"
 
       - name: Restore
         run: dotnet restore src/ReDOS/ReDOS.csproj
@@ -104,11 +109,11 @@ jobs:
           Remove-Item publish/*.pdb -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path dist | Out-Null
 
-          $name = "ReDOS-${{ steps.version.outputs.version }}-win-x64"
+          $name = "ReDOS-${{ steps.version.outputs.label }}-win-x64"
           Compress-Archive -Path publish/* -DestinationPath "dist/$name.zip" -Force
 
           # Standalone exe for people who would rather let ReDOS fetch the core itself.
-          Copy-Item publish/ReDOS.exe "dist/ReDOS-${{ steps.version.outputs.version }}-standalone.exe" -Force
+          Copy-Item publish/ReDOS.exe "dist/ReDOS-${{ steps.version.outputs.label }}-standalone.exe" -Force
 
           # Collect the hashes before writing, so the sums file is never hashing itself.
           $sums = Get-ChildItem dist -File |
@@ -139,8 +144,10 @@ jobs:
           name: ReDOS latest (${{ steps.version.outputs.version }})
           prerelease: true
           body: |
-            Automatic build of `main` (commit ${{ github.sha }}).
+            Automatic build of `main` — version ${{ steps.version.outputs.version }}, commit ${{ github.sha }}.
 
-            - **ReDOS-*-win-x64.zip** — ReDOS plus the bundled DOS core. Unzip, run `ReDOS.exe` once, done.
-            - **ReDOS-*-standalone.exe** — just ReDOS; downloads the core by itself on first use.
+            - **ReDOS-latest-win-x64.zip** — ReDOS plus the bundled DOS core. Unzip, run `ReDOS.exe` once, done.
+            - **ReDOS-latest-standalone.exe** — just ReDOS; downloads the core by itself on first use.
+
+            These filenames stay the same on every build, so the download links never move.
           files: dist/*
