@@ -45,6 +45,13 @@ internal static class Terminal
             innerArgs.AddRange(programArgs);
         }
 
+        // ReDOS is a GUI-subsystem program, so Windows gives it no console of its own. Launched
+        // directly by the terminal it would have nothing to draw on, and the DOS core would end up
+        // allocating a default-sized console that ReDOS never shaped or cleared — which is what
+        // leaves old frames smeared behind new ones. Going through cmd, a console-subsystem
+        // program, creates a real console for the session to inherit and control.
+        string inner = string.Join(' ', new[] { AppPaths.ExecutablePath }.Concat(innerArgs).Select(Quote));
+
         string? wt = FindWindowsTerminal();
         ProcessStartInfo psi;
 
@@ -64,18 +71,20 @@ internal static class Terminal
             psi.ArgumentList.Add("new-tab");
             psi.ArgumentList.Add("--title");
             psi.ArgumentList.Add(title);
-            psi.ArgumentList.Add(AppPaths.ExecutablePath);
-            foreach (string arg in innerArgs) psi.ArgumentList.Add(arg);
+            psi.ArgumentList.Add("cmd.exe");
+            psi.ArgumentList.Add("/c");
+            psi.ArgumentList.Add(inner);
         }
         else
         {
-            // "start" gives the child its own console window; cmd is only the launcher, not the host.
+            // "start" gives the child its own console window; the inner cmd is what hosts it.
             psi = new ProcessStartInfo("cmd.exe") { UseShellExecute = false };
             psi.ArgumentList.Add("/c");
             psi.ArgumentList.Add("start");
             psi.ArgumentList.Add(title);
-            psi.ArgumentList.Add(AppPaths.ExecutablePath);
-            foreach (string arg in innerArgs) psi.ArgumentList.Add(arg);
+            psi.ArgumentList.Add("cmd.exe");
+            psi.ArgumentList.Add("/c");
+            psi.ArgumentList.Add(inner);
         }
 
         try
@@ -156,6 +165,10 @@ internal static class Terminal
 
         ApplyDosEnvironment(psi, drive);
 
+        // Shape the console to the DOS screen before handing it over, or the program's own screen
+        // clears will not cover it and frames will pile up.
+        ConsoleLayout.ApplyDosScreen();
+
         var started = DateTime.UtcNow;
         int exitCode;
         try
@@ -231,6 +244,9 @@ internal static class Terminal
         // Marks every ReDOS session at the prompt itself: "(ReDOS) M:\>".
         psi.Environment["PROMPT"] = "(ReDOS) $P$G";
     }
+
+    private static string Quote(string value) =>
+        value.Contains(' ') ? $"\"{value}\"" : value;
 
     private static string? SearchPath(string fileName)
     {
