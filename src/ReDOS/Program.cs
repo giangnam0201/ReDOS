@@ -8,8 +8,10 @@ internal static class Program
         ReDOS - run MS-DOS programs on modern Windows, with nothing to set up.
 
           redos                        Open the MS-DOS machine in a terminal window.
-          redos run [OPTS] FILE [ARGS...]
+          redos [run] FILE [OPTS] [ARGS...]
                                        Run FILE in a terminal. Non-DOS programs go to Windows.
+                                       "run" is optional and options may go anywhere;
+                                       put DOS program arguments after "--".
                                          --gui         use the graphical core's own window instead
                                                        (needed for graphics and sound)
                                          --force-dos   run it as DOS even if the header disagrees
@@ -92,8 +94,11 @@ internal static class Program
             "console-core" => ConsoleCoreCommand(rest, report),
             "-v" or "--version" or "version" => Print(report, Version()),
             "-h" or "--help" or "help" or "/?" => Print(report, Usage),
-            // Bare path: Explorer and drag-and-drop hand us the file with no verb.
-            _ => File.Exists(args[0]) ? RunCommand(args, report) : Print(report, Usage, exitCode: 2),
+            // No verb: Explorer, drag-and-drop and "redos GAME.EXE" all land here. Anything that
+            // names a real file is a request to run it, whatever order the options came in.
+            _ => args.Any(a => !a.StartsWith('-') && File.Exists(a))
+                ? RunCommand(args, report)
+                : Print(report, Usage, exitCode: 2),
         };
     }
 
@@ -143,12 +148,18 @@ internal static class Program
         var options = new RunOptions();
         var remaining = new List<string>(args.Length);
 
-        for (int i = 0; i < args.Length; i++)
+        // ReDOS options are recognised wherever they appear, because "redos GAME.EXE --gui" is how
+        // people actually type it. DOS programs take /switches rather than --options, so there is
+        // nothing to collide with; "--" still forces everything after it through to the program.
+        bool passThrough = false;
+
+        foreach (string arg in args)
         {
-            // Only treat flags before the target path as ours; everything after belongs to the DOS program.
-            if (remaining.Count == 0 && args[i].StartsWith('-'))
+            if (!passThrough)
             {
-                switch (args[i])
+                if (arg == "--") { passThrough = true; continue; }
+
+                switch (arg)
                 {
                     case "--force-dos" or "-f": options = options with { ForceDos = true }; continue;
                     case "--no-import": options = options with { NoImport = true }; continue;
@@ -159,7 +170,7 @@ internal static class Program
                 }
             }
 
-            remaining.Add(args[i]);
+            remaining.Add(arg);
         }
 
         if (remaining.Count == 0) return Print(report, Usage, exitCode: 2);
