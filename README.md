@@ -38,7 +38,7 @@ Download the latest build from the [releases page](../../releases/tag/latest):
 - **`ReDOS-*-win-x64.zip`** — ReDOS plus the DOS core. Unzip anywhere, run `ReDOS.exe` once.
 - **`ReDOS-*-standalone.exe`** — just ReDOS; it downloads the core itself on first use.
 
-The first run registers ReDOS for your user account. Everything it writes lives under
+The first run registers ReDOS for your user account and adds its folder to your user PATH, so `redos` works from any shell. Everything it writes lives under
 `HKEY_CURRENT_USER` and `%LOCALAPPDATA%\ReDOS`, so **no administrator rights are needed** and
 `redos uninstall` reverses all of it.
 
@@ -117,9 +117,30 @@ to a spare drive letter for the session (the first free letter from M onward, ov
 `C:\PROGRAMS\<NAME>`; the files are the same ones, and the letter is released when the session ends.
 The graphical core has no such limitation and mounts the sandbox as `C:`.
 
-A bare `redos` in a terminal needs a DOS shell to sit at, and the console core has no built-in one.
-Drop a `COMMAND.COM` into `<sandbox>\DOS\` and you get a real DOS prompt in your terminal; without
-one, ReDOS opens the graphical machine, which has its own shell.
+### The DOS prompt
+
+A bare `redos` opens a terminal at the DOS prompt, marked so you always know which shell you are in:
+
+```
+(ReDOS) M:\>ver
+
+FreeCom version 0.86 - WATCOMC - XMS_Swap
+```
+
+The console core has no built-in shell, so ReDOS installs one into `<sandbox>\DOS\` the first time
+you need it: **FreeCOM**, the FreeDOS `COMMAND.COM`. It is GPL, freely redistributable, and targets
+a modern DOS API.
+
+Do not substitute a very old interpreter for it. MS-DOS 2.0's `COMMAND.COM` loads, but reaches
+into DOS kernel internals that an emulated API layer does not reproduce, so ordinary commands crash.
+If you want to supply your own shell anyway, point `REDOS_SHELL` at it or use
+`redos shell --install PATH`.
+
+The DOS session gets a small, deliberate environment — `PATH`, `PROMPT`, `TEMP`, `TMP`, `COMSPEC` —
+rather than inheriting Windows'. That matters for two reasons: the DOS environment block is only a
+few hundred bytes and a modern Windows `PATH` alone can overflow it, and inheriting it would let
+`HELP`, `WINVER`, `ROBOCOPY` and every other Windows console tool resolve from inside the DOS
+prompt. With the clean environment they correctly report `Bad command or filename`.
 
 ## Commands
 
@@ -143,6 +164,7 @@ redos detect FILE            Report what kind of executable FILE is.
 redos status                 Show what is installed and where.
 redos install [--intercept-exe] / redos uninstall
 redos core [--update]        Show or refresh the graphical DOS core.
+redos shell [--update | --install PATH]
 redos console-core [--update | --install PATH]
 ```
 

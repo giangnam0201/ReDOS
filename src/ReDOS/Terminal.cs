@@ -33,7 +33,10 @@ internal static class Terminal
     {
         Sandbox.Ensure();
 
-        string title = programPath is null ? "MS-DOS" : Path.GetFileNameWithoutExtension(programPath);
+        // Every window ReDOS opens is marked, so a DOS session is never mistaken for a normal shell.
+        string title = programPath is null
+            ? $"(ReDOS) {SubstDrive.PlannedLetter}:\\"
+            : $"(ReDOS) {Path.GetFileNameWithoutExtension(programPath)}";
 
         var innerArgs = new List<string> { "session" };
         if (programPath is not null)
@@ -109,15 +112,18 @@ internal static class Terminal
         }
 
         // Without a program there is nothing for the console core to run: unlike the graphical core
-        // it has no built-in shell, so it needs a real COMMAND.COM.
-        if (programPath is null)
+        // it has no built-in shell, so the sandbox needs a real COMMAND.COM. ReDOS installs one.
+        bool isShellSession = programPath is null;
+        if (isShellSession)
         {
-            programPath = FindDosShell();
-            if (programPath is null)
+            try
+            {
+                programPath = DosShell.EnsureAsync(report.Status).GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
             {
                 report.Error(
-                    "The console DOS machine needs a DOS shell to sit at, and no COMMAND.COM was found in\n" +
-                    $"{Sandbox.DosDir}. Copy one there for a terminal prompt.\n" +
+                    $"A DOS shell could not be installed ({ex.Message}).\n" +
                     "Opening the graphical DOS machine instead.");
                 return Launcher.RunPrompt(report);
             }
@@ -127,13 +133,17 @@ internal static class Terminal
         // see PROGRAMS\FOO at the root instead of a long Windows path.
         using var drive = SubstDrive.Create(Sandbox.Root);
 
-        string workingDirectory = Path.GetDirectoryName(programPath) ?? Sandbox.Root;
-        string program = programPath;
+        // A shell session starts at the root of the machine; a program starts in its own folder.
+        string workingDirectory = isShellSession
+            ? Sandbox.Root
+            : Path.GetDirectoryName(programPath) ?? Sandbox.Root;
 
-        if (drive is not null && Sandbox.Contains(programPath))
+        string program = programPath!;
+
+        if (drive is not null && Sandbox.Contains(programPath!))
         {
             workingDirectory = drive.Translate(workingDirectory);
-            program = Path.GetFileName(programPath);
+            program = drive.Translate(programPath!);
         }
 
         var psi = new ProcessStartInfo(core)
@@ -144,8 +154,7 @@ internal static class Terminal
         psi.ArgumentList.Add(program);
         foreach (string arg in programArgs) psi.ArgumentList.Add(arg);
 
-        psi.Environment["TEMP"] = Sandbox.TempDir;
-        psi.Environment["TMP"] = Sandbox.TempDir;
+        ApplyDosEnvironment(psi, drive);
 
         try
         {
@@ -161,16 +170,32 @@ internal static class Terminal
         }
     }
 
-    /// <summary>A COMMAND.COM the user has dropped into the sandbox, if there is one.</summary>
-    private static string? FindDosShell()
+    /// <summary>
+    /// Give DOS a small, deliberate environment. The inherited Windows one is both irrelevant and
+    /// dangerous here: the DOS environment block is a few hundred bytes, and a modern PATH alone can
+    /// overflow it.
+    /// </summary>
+    private static void ApplyDosEnvironment(ProcessStartInfo psi, SubstDrive? drive)
     {
-        foreach (string directory in new[] { Sandbox.DosDir, Sandbox.Root })
-        {
-            string candidate = Path.Combine(directory, "COMMAND.COM");
-            if (File.Exists(candidate)) return candidate;
-        }
+        // Windows APIs inside the console core still need these two.
+        string? systemRoot = Environment.GetEnvironmentVariable("SystemRoot");
+        string? windir = Environment.GetEnvironmentVariable("windir");
 
-        return null;
+        psi.Environment.Clear();
+        if (systemRoot is not null) psi.Environment["SystemRoot"] = systemRoot;
+        if (windir is not null) psi.Environment["windir"] = windir;
+
+        string root = drive is not null ? $"{drive.Letter}:" : Path.GetPathRoot(Sandbox.Root)?.TrimEnd('\\') ?? "C:";
+        string dosDir = drive is not null ? drive.Translate(Sandbox.DosDir) : Sandbox.DosDir;
+        string tempDir = drive is not null ? drive.Translate(Sandbox.TempDir) : Sandbox.TempDir;
+
+        psi.Environment["PATH"] = $"{dosDir};{root}\\";
+        psi.Environment["TEMP"] = tempDir;
+        psi.Environment["TMP"] = tempDir;
+        psi.Environment["COMSPEC"] = DosShell.Find() ?? Path.Combine(Sandbox.DosDir, DosShell.ShellFileName);
+
+        // Marks every ReDOS session at the prompt itself: "(ReDOS) M:\>".
+        psi.Environment["PROMPT"] = "(ReDOS) $P$G";
     }
 
     private static string? SearchPath(string fileName)
@@ -199,35 +224,81 @@ internal static class Terminal
 /// A temporary drive letter mapped to a folder, so DOS sees a drive root rather than a long path.
 /// Removed again when the session ends.
 /// </summary>
-internal sealed class SubstDrive : IDisposable
+internal sealed partial class SubstDrive : IDisposable
 {
     private readonly string _target;
 
+    /// <summary>False when we adopted a mapping someone else made, which we must not tear down.</summary>
+    private readonly bool _owned;
+
     internal string Letter { get; }
 
-    private SubstDrive(string letter, string target)
+    private SubstDrive(string letter, string target, bool owned)
     {
         Letter = letter;
         _target = target;
+        _owned = owned;
+    }
+
+    [System.Runtime.InteropServices.LibraryImport("kernel32.dll", EntryPoint = "QueryDosDeviceW",
+        StringMarshalling = System.Runtime.InteropServices.StringMarshalling.Utf16, SetLastError = true)]
+    private static partial uint QueryDosDevice(string lpDeviceName, char[]? lpTargetPath, uint ucchMax);
+
+    /// <summary>Where a drive letter actually points, for substituted drives.</summary>
+    private static string? TargetOf(string letter)
+    {
+        var buffer = new char[1024];
+        uint length = QueryDosDevice($"{letter}:", buffer, (uint)buffer.Length);
+        if (length == 0) return null;
+
+        string target = new string(buffer, 0, (int)length).Split('\0')[0];
+
+        // subst reports its target as a \??\ prefixed path; real volumes report a device path.
+        const string prefix = @"\??\";
+        return target.StartsWith(prefix, StringComparison.Ordinal) ? target[prefix.Length..] : null;
+    }
+
+    private static string[] Candidates()
+    {
+        string? letter = Environment.GetEnvironmentVariable("REDOS_DRIVE")?.TrimEnd(':', '\\');
+        return letter is { Length: 1 }
+            ? [letter.ToUpperInvariant()]
+            : ["M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y"];
+    }
+
+    /// <summary>The letter a session is expected to land on, for labelling a window before it opens.</summary>
+    internal static string PlannedLetter
+    {
+        get
+        {
+            var taken = DriveInfo.GetDrives().Select(d => d.Name[..1].ToUpperInvariant()).ToHashSet();
+            return Candidates().FirstOrDefault(c => !taken.Contains(c)) ?? "C";
+        }
     }
 
     /// <summary>Map <paramref name="folder"/> to a free drive letter, or null if none could be taken.</summary>
     internal static SubstDrive? Create(string folder)
     {
-        string? letter = Environment.GetEnvironmentVariable("REDOS_DRIVE")?.TrimEnd(':', '\\');
-        var candidates = letter is { Length: 1 }
-            ? [letter.ToUpperInvariant()]
-            : new[] { "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y" };
+        string full = Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar);
 
         var taken = DriveInfo.GetDrives()
             .Select(d => d.Name[..1].ToUpperInvariant())
             .ToHashSet();
 
-        foreach (string candidate in candidates)
+        // A session that was killed rather than closed leaves its mapping behind. Adopt it instead
+        // of walking down the alphabet on every launch.
+        foreach (string candidate in Candidates())
+        {
+            if (!taken.Contains(candidate)) continue;
+            if (string.Equals(TargetOf(candidate)?.TrimEnd('\\'), full, StringComparison.OrdinalIgnoreCase))
+                return new SubstDrive(candidate, full, owned: false);
+        }
+
+        foreach (string candidate in Candidates())
         {
             if (taken.Contains(candidate)) continue;
             if (!RunSubst($"{candidate}:", folder)) continue;
-            return new SubstDrive(candidate, Path.GetFullPath(folder));
+            return new SubstDrive(candidate, full, owned: true);
         }
 
         AppPaths.Log("no free drive letter for the sandbox; using full paths instead");
@@ -246,6 +317,9 @@ internal sealed class SubstDrive : IDisposable
 
     public void Dispose()
     {
+        // Another session may still be using a mapping we merely adopted.
+        if (!_owned) return;
+
         try { RunSubst($"{Letter}:", null); }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
         {

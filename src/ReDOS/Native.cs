@@ -27,6 +27,22 @@ internal static partial class Native
     [LibraryImport("shell32.dll", EntryPoint = "SHChangeNotify")]
     internal static partial void SHChangeNotify(int wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);
 
+    private const int WM_SETTINGCHANGE = 0x001A;
+    private const int SMTO_ABORTIFHUNG = 0x0002;
+    private static readonly IntPtr HWND_BROADCAST = new(0xFFFF);
+
+    [LibraryImport("user32.dll", EntryPoint = "SendMessageTimeoutW", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial IntPtr SendMessageTimeout(
+        IntPtr hWnd, int Msg, IntPtr wParam, string lParam, int fuFlags, int uTimeout, out IntPtr lpdwResult);
+
+    /// <summary>
+    /// Tell already-running programs that the environment changed, so a shell opened afterwards sees
+    /// the new PATH without a sign-out. Explorer relays it to the shells it starts.
+    /// </summary>
+    internal static void BroadcastEnvironmentChange() =>
+        SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, IntPtr.Zero, "Environment",
+            SMTO_ABORTIFHUNG, 5000, out _);
+
     /// <summary>Ask the filesystem for the 8.3 alias of a path, so DOS never sees a long name it cannot type.</summary>
     internal static string? TryGetShortPath(string longPath)
     {

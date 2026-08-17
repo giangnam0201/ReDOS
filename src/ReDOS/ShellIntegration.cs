@@ -81,9 +81,23 @@ internal static class ShellIntegration
             }
         }
 
+        // Put the folder ReDOS runs from on PATH, so "redos" works from any shell.
+        string installDir = Path.GetDirectoryName(exe) ?? AppPaths.InstallDir;
+        try
+        {
+            if (PathIntegration.Add(installDir))
+                report.Status($"Added to your PATH: {installDir}");
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            report.Status($"Could not update your PATH ({ex.Message}); everything else still works.");
+        }
+
         using (var state = Registry.CurrentUser.CreateSubKey(StateKey))
         {
             state.SetValue("ExePath", exe);
+            // Recorded so uninstall removes exactly what was added, even if ReDOS has since moved.
+            state.SetValue("PathEntry", installDir);
             state.SetValue("Version", typeof(ShellIntegration).Assembly.GetName().Version?.ToString() ?? "0.0.0");
             state.SetValue("InterceptExe", interceptExe ? 1 : 0, RegistryValueKind.DWord);
         }
@@ -94,6 +108,20 @@ internal static class ShellIntegration
 
     internal static void Uninstall(Reporter report)
     {
+        using (var state = Registry.CurrentUser.OpenSubKey(StateKey))
+        {
+            string? recorded = state?.GetValue("PathEntry") as string;
+            try
+            {
+                if (recorded is not null && PathIntegration.Remove(recorded))
+                    report.Status($"Removed from your PATH: {recorded}");
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+            {
+                report.Status($"Could not update your PATH ({ex.Message}); remove {recorded} by hand if you want it gone.");
+            }
+        }
+
         using (var classes = Registry.CurrentUser.CreateSubKey(ClassesRoot))
         {
             foreach (string ext in OwnedExtensions)

@@ -28,6 +28,8 @@ internal static class Program
                                        Add or remove the file associations. --intercept-exe also
                                        routes double-clicked .exe files through ReDOS (reversible).
           redos core [--update]        Show or refresh the graphical DOS core.
+          redos shell [--update | --install PATH]
+                                       Show or replace the DOS shell (COMMAND.COM).
           redos console-core [--update | --install PATH]
                                        Show, fetch or replace the console DOS core.
           redos --version
@@ -67,7 +69,8 @@ internal static class Program
         return command switch
         {
             "run" => RunCommand(rest, report),
-            "dos" or "shell" or "prompt" => OpenMachine(rest, report),
+            // "shell" manages the COMMAND.COM binary; "dos" and "prompt" open the machine.
+            "dos" or "prompt" => OpenMachine(rest, report),
             "session" => SessionCommand(rest, report),
             "manager" or "gui" => ManagerCommand(),
             "import" => ImportCommand(rest, report),
@@ -80,6 +83,7 @@ internal static class Program
             "install" => InstallCommand(rest, report),
             "uninstall" => UninstallCommand(report),
             "core" => CoreCommand(rest, report),
+            "shell" => ShellCommand(rest, report),
             "console-core" => ConsoleCoreCommand(rest, report),
             "-v" or "--version" or "version" => Print(report, Version()),
             "-h" or "--help" or "help" or "/?" => Print(report, Usage),
@@ -262,6 +266,7 @@ internal static class Program
              Graphical core     : {core}
              Console core       : {consoleCore}
              Windows Terminal   : {terminal}
+             On PATH            : {(PathIntegration.Contains(Path.GetDirectoryName(AppPaths.ExecutablePath) ?? AppPaths.InstallDir) ? "yes - \"redos\" works from any shell" : "no - run: redos install")}
              Associations       : {(ShellIntegration.IsInstalled() ? "enabled" : "not enabled - run: redos install")}
              .exe interception  : {(ShellIntegration.IsInterceptingExe() ? "on" : "off (turn on with: redos install --intercept-exe)")}
              Log                : {AppPaths.LogFile}
@@ -307,6 +312,43 @@ internal static class Program
             report.Error($"Could not update the DOS core: {ex.Message}");
             return 3;
         }
+    }
+
+    private static int ShellCommand(string[] args, Reporter report)
+    {
+        int index = Array.IndexOf(args, "--install");
+        if (index >= 0 && index + 1 < args.Length)
+        {
+            try
+            {
+                string installed = DosShell.InstallFrom(Path.GetFullPath(args[index + 1]));
+                return Print(report, $"DOS shell installed: {installed}");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+            {
+                report.Error($"Could not install the shell: {ex.Message}");
+                return 1;
+            }
+        }
+
+        if (args.Contains("--update"))
+        {
+            try
+            {
+                string updated = DosShell.EnsureAsync(report.Status, force: true).GetAwaiter().GetResult();
+                return Print(report, $"DOS shell updated: {updated}");
+            }
+            catch (Exception ex)
+            {
+                report.Error($"Could not update the shell: {ex.Message}");
+                return 3;
+            }
+        }
+
+        string? existing = DosShell.Find();
+        return Print(report, existing is null
+            ? "No DOS shell installed yet; FreeCOM is fetched automatically the first time you open the prompt."
+            : $"DOS shell: {existing}");
     }
 
     private static int ConsoleCoreCommand(string[] args, Reporter report)
