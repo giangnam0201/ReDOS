@@ -154,7 +154,7 @@ internal static class Program
                     case "--no-import": options = options with { NoImport = true }; continue;
                     case "--stay": options = options with { StayOpen = true }; continue;
                     case "--dry-run": options = options with { DryRun = true }; continue;
-                    case "--console" or "--terminal": options = options with { Graphical = false }; continue;
+                    case "--console" or "--terminal": options = options with { Graphical = false, ForceConsole = true }; continue;
                     case "--gui" or "--window" or "-g": options = options with { Graphical = true }; continue;
                 }
             }
@@ -195,7 +195,11 @@ internal static class Program
                         : Path.GetFileName(extracted.HostPath)));
             }
 
-            var result = Sandbox.Import(Path.GetFullPath(args[0]));
+            string target = Path.GetFullPath(args[0]);
+            var result = Directory.Exists(target)
+                ? Sandbox.ImportFolder(target)
+                : Sandbox.Import(target);
+
             string extra = result.SupportFilesCopied > 0 ? $" with {result.SupportFilesCopied} data file(s)" : "";
             return Print(report, result.WasAlreadyPresent
                 ? $"Already in the sandbox as C:\\PROGRAMS\\{result.ProgramName}{extra}."

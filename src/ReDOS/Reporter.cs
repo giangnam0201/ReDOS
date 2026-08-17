@@ -49,7 +49,12 @@ internal sealed class Reporter
 
         Write(message + " [y/N] ", error: false, newLine: false);
         string? answer = TryReadLine();
-        return answer is not null && answer.Trim().StartsWith("y", StringComparison.OrdinalIgnoreCase);
+        if (answer is null) return false;
+
+        // Piped input often carries a byte-order mark or other zero-width characters, which
+        // whitespace trimming leaves in place.
+        string cleaned = answer.Trim().TrimStart('﻿', '​', '‎', '‏').Trim();
+        return cleaned.StartsWith("y", StringComparison.OrdinalIgnoreCase);
     }
 
     private void Emit(string message, int icon, bool error)

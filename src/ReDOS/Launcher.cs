@@ -30,6 +30,9 @@ internal sealed record RunOptions
     /// or sound, since the console core emulates neither.
     /// </summary>
     internal bool Graphical { get; init; }
+
+    /// <summary>Insist on the terminal, clearing any remembered preference for the graphical core.</summary>
+    internal bool ForceConsole { get; init; }
 }
 
 internal static class Launcher
@@ -116,10 +119,18 @@ internal static class Launcher
             return 0;
         }
 
-        // A terminal is the default home for a DOS program. The session falls back to the graphical
-        // core by itself if the console core cannot be had, so this is always safe to try.
-        if (!options.Graphical && SelectBackend() == Backend.BundledCore)
+        // Asking for a particular core explicitly is also a statement about this program.
+        if (options.Graphical) ProgramPreferences.SetGraphical(programPath);
+        else if (options.ForceConsole) ProgramPreferences.ClearGraphical(programPath);
+
+        // A terminal is the default home for a DOS program, unless this one has already shown that
+        // it needs graphics. The session falls back by itself if the console core cannot be had.
+        if (!options.Graphical
+            && SelectBackend() == Backend.BundledCore
+            && !ProgramPreferences.PrefersGraphical(programPath))
+        {
             return Terminal.OpenDosSession(programPath, programArgs, report);
+        }
 
         return SelectBackend() == Backend.NativeNtvdm
             ? RunViaNtvdm(programPath, programArgs, report)

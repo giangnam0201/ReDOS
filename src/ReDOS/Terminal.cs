@@ -156,18 +156,52 @@ internal static class Terminal
 
         ApplyDosEnvironment(psi, drive);
 
+        var started = DateTime.UtcNow;
+        int exitCode;
         try
         {
             using var process = Process.Start(psi);
             if (process is null) return 1;
             process.WaitForExit();
-            return process.ExitCode;
+            exitCode = process.ExitCode;
         }
         catch (System.ComponentModel.Win32Exception ex)
         {
             report.Error($"The console DOS core failed to start: {ex.Message}");
             return 3;
         }
+
+        // A program that gives up within a few seconds has almost always hit the one thing a
+        // terminal cannot provide: graphics. The window is still ours, so ask before it closes.
+        if (!isShellSession && DateTime.UtcNow - started < TimeSpan.FromSeconds(5))
+            return OfferGraphicalFallback(programPath!, programArgs, exitCode, report);
+
+        return exitCode;
+    }
+
+    private static int OfferGraphicalFallback(string programPath, IReadOnlyList<string> programArgs, int exitCode, Reporter report)
+    {
+        string name = Path.GetFileName(programPath);
+
+        Console.WriteLine();
+        Console.WriteLine($"{name} stopped almost immediately.");
+        Console.WriteLine("Programs that draw graphics cannot run in a terminal: the console core");
+        Console.WriteLine("emulates no video hardware, so they quit at startup.");
+        Console.WriteLine();
+
+        if (!report.Confirm("Open it in the graphical DOS machine instead (sound and graphics work there)?"))
+        {
+            Console.WriteLine();
+            Console.WriteLine($"Leaving it as it is. To try graphics later:  redos run {name} --gui");
+            return exitCode;
+        }
+
+        // Remember, so this program goes straight to the graphical core from now on.
+        ProgramPreferences.SetGraphical(programPath);
+        Console.WriteLine();
+        Console.WriteLine($"Opening the graphical machine. {name} will use it automatically from now on.");
+
+        return Launcher.Run(programPath, programArgs, new RunOptions { Graphical = true, ForceDos = true }, report);
     }
 
     /// <summary>

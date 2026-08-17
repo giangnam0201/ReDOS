@@ -164,6 +164,27 @@ internal static class Sandbox
     }
 
     /// <summary>
+    /// Import a folder of DOS software: work out which executable is the program, and bring the
+    /// whole folder along, since its data files live beside it.
+    /// </summary>
+    internal static ImportResult ImportFolder(string directory)
+    {
+        Ensure();
+
+        string full = Path.GetFullPath(directory);
+        if (!Directory.Exists(full))
+            throw new DirectoryNotFoundException($"There is no folder at {full}.");
+
+        string? executable = PickMainExecutable(full, Path.GetFileName(full))
+            ?? throw new InvalidOperationException(
+                $"No DOS program was found in {Path.GetFileName(full)}. " +
+                "If it holds Windows programs rather than DOS ones, ReDOS cannot run them.");
+
+        // The executable names the program better than a folder called "win3_something_shareware".
+        return Import(executable, Path.GetFileNameWithoutExtension(executable));
+    }
+
+    /// <summary>
     /// Unpack a set of floppy images straight into the sandbox. Many DOS programs were shipped as
     /// plain files on disk, so this often replaces running the installer entirely — and unlike an
     /// installer it works in a terminal session.
