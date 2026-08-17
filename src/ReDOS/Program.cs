@@ -8,6 +8,7 @@ internal static class Program
         ReDOS - run MS-DOS programs on modern Windows, with nothing to set up.
 
           redos                        Open the MS-DOS machine in a terminal window.
+          redos --gui                  Open it in the graphical machine's own window instead.
           redos [run] FILE [OPTS] [ARGS...]
                                        Run FILE in a terminal. Non-DOS programs go to Windows.
                                        "run" is optional and options may go anywhere;
@@ -18,6 +19,13 @@ internal static class Program
                                          --no-import   leave it in place, mounted as D:, not imported
                                          --stay        stay at the DOS prompt after it exits
                                          --dry-run     print the machine config instead of running
+          redos win [PROGRAM]          Start Windows 3.x from the sandbox, optionally opening a
+                                       16-bit Windows program in it.
+          redos boot IMAGE             Boot a hard disk image — how Windows 95/98 has to run.
+                                         --machine NAME  emulated video card (svga_s3, svga_et4000,
+                                                         svga_paradise, vgaonly...)
+                                         --vmem MB       video memory; a mismatch here makes the
+                                                         guest draw at the wrong width
           redos manager                Open the sandbox manager (add, run and delete programs).
           redos import FILE|IMAGE...    Copy a program into the sandbox. Floppy images are
                                        unpacked straight in, no installer needed.
@@ -81,6 +89,8 @@ internal static class Program
             "manager" or "gui" => ManagerCommand(),
             "import" => ImportCommand(rest, report),
             "mount" or "floppy" or "disk" => MountCommand(rest, report),
+            "win" or "windows" => WindowsCommand(rest, report),
+            "boot" => BootCommand(rest, report),
             "list" or "ls" => ListCommand(report),
             "remove" or "rm" => RemoveCommand(rest, report),
             "open" or "explorer" => OpenSandboxCommand(),
@@ -95,12 +105,17 @@ internal static class Program
             "-v" or "--version" or "version" => Print(report, Version()),
             "-h" or "--help" or "help" or "/?" => Print(report, Usage),
             // No verb: Explorer, drag-and-drop and "redos GAME.EXE" all land here. Anything that
-            // names a real file is a request to run it, whatever order the options came in.
-            _ => args.Any(a => !a.StartsWith('-') && File.Exists(a))
-                ? RunCommand(args, report)
-                : Print(report, Usage, exitCode: 2),
+            // names a real file is a request to run it, whatever order the options came in;
+            // options on their own ("redos --gui") are about the machine itself.
+            _ when args.Any(a => !a.StartsWith('-') && File.Exists(a)) => RunCommand(args, report),
+            _ when args.All(IsMachineOption) => OpenMachine(args, report),
+            _ => Print(report, Usage, exitCode: 2),
         };
     }
+
+    /// <summary>Options that choose how the machine opens rather than naming a program to run.</summary>
+    private static bool IsMachineOption(string arg) =>
+        arg is "--gui" or "--window" or "-g" or "--console" or "--terminal";
 
     /// <summary>
     /// The machine itself. A console-hosted core turns a real terminal window into DOS; without one,
@@ -110,7 +125,7 @@ internal static class Program
     {
         EnsureFirstRun(report);
 
-        if (args.Contains("--window") || args.Contains("--gui"))
+        if (args.Any(a => a is "--window" or "--gui" or "-g"))
             return Launcher.RunPrompt(report);
 
         return Terminal.OpenDosSession(programPath: null, [], report);
@@ -251,6 +266,39 @@ internal static class Program
         return Launcher.RunFloppies(images, report);
     }
 
+    private static int WindowsCommand(string[] args, Reporter report)
+    {
+        EnsureFirstRun(report);
+        string? program = args.FirstOrDefault(a => !a.StartsWith('-'));
+        return Launcher.RunWindows(program, report);
+    }
+
+    private static int BootCommand(string[] args, Reporter report)
+    {
+        string? image = null;
+        string? machine = null;
+        int? videoMemory = null;
+
+        for (int i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--machine" when i + 1 < args.Length: machine = args[++i]; continue;
+                case "--vmem" when i + 1 < args.Length && int.TryParse(args[i + 1], out int mb):
+                    videoMemory = mb;
+                    i++;
+                    continue;
+            }
+
+            if (!args[i].StartsWith('-')) image ??= args[i];
+        }
+
+        if (image is null) return Print(report, Usage, exitCode: 2);
+
+        EnsureFirstRun(report);
+        return Launcher.BootImage(image, report, machine, videoMemory);
+    }
+
     /// <summary>Expand the given paths into a disk set: files as given, folders scanned for images.</summary>
     private static IReadOnlyList<string> CollectImages(IEnumerable<string> paths)
     {
@@ -348,6 +396,7 @@ internal static class Program
              Backend            : {(Launcher.SelectBackend() == Backend.NativeNtvdm ? "native NTVDM (32-bit Windows)" : "bundled DOS core")}
              Graphical core     : {core}
              Console core       : {consoleCore}
+             Windows in sandbox : {WindowsInstall.Describe(WindowsInstall.Detect())}
              Windows Terminal   : {terminal}
              On PATH            : {(PathIntegration.Contains(Path.GetDirectoryName(AppPaths.ExecutablePath) ?? AppPaths.InstallDir) ? "yes - \"redos\" works from any shell" : "no - run: redos install")}
              Associations       : {(ShellIntegration.IsInstalled() ? "enabled" : "not enabled - run: redos install")}

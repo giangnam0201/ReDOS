@@ -61,6 +61,25 @@ internal static class Launcher
             return 2;
         }
 
+        // A 16-bit Windows program is not a DOS program, but the sandbox may have a Windows that
+        // can open it. That beats handing it to Windows 11, which cannot run it at all.
+        if (!options.ForceDos && kind == ProgramKind.Sixteen)
+        {
+            var windows = WindowsInstall.Detect();
+            if (windows.CanRunFromFolder)
+            {
+                AppPaths.Log($"windows launch: {full}");
+                return RunWindows(full, report);
+            }
+
+            report.Error(
+                $"{Path.GetFileName(full)} is a 16-bit Windows program, which 64-bit Windows cannot run.\n" +
+                (windows.Flavour == WindowsInstall.Flavour.Windows9x
+                    ? "The sandbox has Windows 95/98, which has to be booted from a disk image: redos boot <image.img>"
+                    : "Install Windows 3.x into the sandbox and ReDOS will open it there: see \"redos win\"."));
+            return 2;
+        }
+
         if (!options.ForceDos && !DosDetector.IsDosKind(kind))
         {
             AppPaths.Log($"passthrough ({kind}): {full}");
@@ -142,6 +161,86 @@ internal static class Launcher
     {
         Sandbox.Ensure();
         return RunViaCore(new LaunchPlan { Title = "ReDOS - MS-DOS prompt", StayOpen = true }, report);
+    }
+
+    /// <summary>
+    /// Start Windows from the sandbox, optionally with a program to open inside it. Windows 3.x
+    /// only: later versions boot a disk rather than running as a DOS program.
+    /// </summary>
+    internal static int RunWindows(string? programPath, Reporter report)
+    {
+        Sandbox.Ensure();
+
+        var windows = WindowsInstall.Detect();
+        switch (windows.Flavour)
+        {
+            case WindowsInstall.Flavour.None:
+                report.Error(
+                    "No Windows installation was found in the sandbox.\n" +
+                    $"Install Windows 3.x into {Path.Combine(Sandbox.Root, "WINDOWS")} — for example with:\n" +
+                    "  redos mount <Windows disk images>\n" +
+                    "and running SETUP from A:.");
+                return 2;
+
+            case WindowsInstall.Flavour.Windows9x:
+                report.Error(
+                    $"{WindowsInstall.Describe(windows)}.\n\n" +
+                    "Windows 95/98 cannot start from a folder: it boots a disk, so it needs protected-mode\n" +
+                    "access to a real one. A folder on drive C: is emulated at the DOS level, with no disk\n" +
+                    "underneath to boot.\n\n" +
+                    "Run it from a hard disk image instead:  redos boot <image.img>\n" +
+                    "Windows 3.x is the version that runs from a folder.");
+                return 2;
+        }
+
+        string? programDosPath = null;
+        if (programPath is not null)
+        {
+            string full = Path.GetFullPath(programPath);
+            if (!Sandbox.Contains(full))
+            {
+                var imported = Sandbox.Import(full);
+                full = imported.HostPath;
+                report.Status($"Imported into the sandbox as C:\\PROGRAMS\\{imported.ProgramName}");
+            }
+
+            programDosPath = Sandbox.ToDosPath(full);
+        }
+
+        var plan = new LaunchPlan
+        {
+            Title = programPath is null ? "ReDOS - Windows" : $"ReDOS - {Path.GetFileNameWithoutExtension(programPath)}",
+            RawCommand = WindowsInstall.StartCommand(windows, programDosPath),
+            StayOpen = true,
+        };
+
+        return RunViaCore(plan, report);
+    }
+
+    /// <summary>
+    /// Attach a hard disk image and boot it. This is how Windows 95/98 and other real operating
+    /// systems run: the image becomes the machine, and the sandbox is not part of it.
+    /// </summary>
+    internal static int BootImage(string imagePath, Reporter report, string? machine = null, int? videoMemoryMb = null)
+    {
+        string full = Path.GetFullPath(imagePath);
+        if (!File.Exists(full))
+        {
+            report.Error($"No disk image at {full}.");
+            return 2;
+        }
+
+        var plan = new LaunchPlan
+        {
+            Title = $"ReDOS - {Path.GetFileNameWithoutExtension(full)}",
+            BootImage = full,
+            Machine = machine,
+            VideoMemoryMb = videoMemoryMb,
+            StayOpen = true,
+        };
+
+        report.Status("Booting the disk image. The sandbox is not mounted in a booted machine.");
+        return RunViaCore(plan, report);
     }
 
     /// <summary>
