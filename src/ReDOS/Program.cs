@@ -17,7 +17,11 @@ internal static class Program
                                          --stay        stay at the DOS prompt after it exits
                                          --dry-run     print the machine config instead of running
           redos manager                Open the sandbox manager (add, run and delete programs).
-          redos import FILE            Copy a program and its data files into the sandbox.
+          redos import FILE|IMAGE...    Copy a program into the sandbox. Floppy images are
+                                       unpacked straight in, no installer needed.
+          redos mount IMAGE|FOLDER...  Put floppies in drive A: and open a DOS machine, for
+                                       running an installer. Ctrl+F4 changes disk.
+                                         --extract  unpack the disks instead of booting
           redos list                   List the programs in the sandbox.
           redos remove NAME            Delete a program from the sandbox.
           redos open                   Open the sandbox folder (drive C:) in Explorer.
@@ -74,6 +78,7 @@ internal static class Program
             "session" => SessionCommand(rest, report),
             "manager" or "gui" => ManagerCommand(),
             "import" => ImportCommand(rest, report),
+            "mount" or "floppy" or "disk" => MountCommand(rest, report),
             "list" or "ls" => ListCommand(report),
             "remove" or "rm" => RemoveCommand(rest, report),
             "open" or "explorer" => OpenSandboxCommand(),
@@ -177,17 +182,80 @@ internal static class Program
 
         try
         {
+            var images = CollectImages(args);
+            if (images.Count > 0)
+            {
+                var extracted = Sandbox.ImportImages(images);
+                return Print(report,
+                    $"Unpacked {images.Count} disk(s), {extracted.SupportFilesCopied} file(s), " +
+                    $"into C:\\PROGRAMS\\{extracted.ProgramName}.\n" +
+                    "No installer needed — run it with:  redos run " +
+                    (extracted.HostPath.EndsWith(extracted.ProgramName, StringComparison.OrdinalIgnoreCase)
+                        ? extracted.HostPath
+                        : Path.GetFileName(extracted.HostPath)));
+            }
+
             var result = Sandbox.Import(Path.GetFullPath(args[0]));
             string extra = result.SupportFilesCopied > 0 ? $" with {result.SupportFilesCopied} data file(s)" : "";
             return Print(report, result.WasAlreadyPresent
                 ? $"Already in the sandbox as C:\\PROGRAMS\\{result.ProgramName}{extra}."
                 : $"Imported as C:\\PROGRAMS\\{result.ProgramName}{extra}.");
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
         {
             report.Error($"Could not import: {ex.Message}");
             return 1;
         }
+    }
+
+    private static int MountCommand(string[] args, Reporter report)
+    {
+        var paths = args.Where(a => !a.StartsWith('-')).ToArray();
+        if (paths.Length == 0) return Print(report, Usage, exitCode: 2);
+
+        var images = CollectImages(paths);
+        if (images.Count == 0)
+        {
+            report.Error(
+                "No readable floppy images found.\n" +
+                "Pass one or more .img/.ima files, or a folder containing them.");
+            return 2;
+        }
+
+        EnsureFirstRun(report);
+
+        if (args.Contains("--extract"))
+        {
+            var extracted = Sandbox.ImportImages(images);
+            return Print(report,
+                $"Unpacked {images.Count} disk(s), {extracted.SupportFilesCopied} file(s), " +
+                $"into C:\\PROGRAMS\\{extracted.ProgramName}.");
+        }
+
+        report.Status($"Mounting {images.Count} disk(s) as A:, sandbox as C:.");
+        return Launcher.RunFloppies(images, report);
+    }
+
+    /// <summary>Expand the given paths into a disk set: files as given, folders scanned for images.</summary>
+    private static IReadOnlyList<string> CollectImages(IEnumerable<string> paths)
+    {
+        var found = new List<string>();
+        foreach (string path in paths)
+        {
+            string full = Path.GetFullPath(path);
+            if (Directory.Exists(full))
+            {
+                found.AddRange(Directory
+                    .EnumerateFiles(full, "*", SearchOption.AllDirectories)
+                    .Where(f => FloppyImage.LooksLikeImage(f) && FloppyImage.CanRead(f)));
+            }
+            else if (FloppyImage.LooksLikeImage(full) && FloppyImage.CanRead(full))
+            {
+                found.Add(full);
+            }
+        }
+
+        return FloppyImage.SortSet(found);
     }
 
     private static int ListCommand(Reporter report)

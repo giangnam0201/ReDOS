@@ -133,6 +133,25 @@ internal static class Launcher
         return RunViaCore(new LaunchPlan { Title = "ReDOS - MS-DOS prompt", StayOpen = true }, report);
     }
 
+    /// <summary>
+    /// Open a machine with floppies in drive A:, for running an installer off disk 1. This always
+    /// uses the graphical core: the console core has no concept of a disk image.
+    /// </summary>
+    internal static int RunFloppies(IReadOnlyList<string> images, Reporter report)
+    {
+        Sandbox.Ensure();
+
+        var plan = new LaunchPlan
+        {
+            Title = $"ReDOS - {FloppyImage.SetName(images[0])} (A:)",
+            FloppyImages = images,
+            StartOnFloppy = true,
+            StayOpen = true,
+        };
+
+        return RunViaCore(plan, report);
+    }
+
     internal static Backend SelectBackend()
     {
         // Virtual-8086 mode does not exist in x64 long mode, which is why 64-bit Windows dropped NTVDM.

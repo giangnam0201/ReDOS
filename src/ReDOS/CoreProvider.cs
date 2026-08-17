@@ -13,6 +13,12 @@ internal static class CoreProvider
     private const string CoreRepo = "joncampbell123/dosbox-x";
     internal const string CoreExeName = "dosbox-x.exe";
 
+    /// <summary>
+    /// The graphical core gets its own folder: it ships as a tree of support files that has to be
+    /// replaced wholesale on update, and it must not take the console core down with it.
+    /// </summary>
+    private static string LocalDir => Path.Combine(AppPaths.Core, "dosbox-x");
+
     /// <summary>Locate the core without touching the network. Null when nothing is installed yet.</summary>
     internal static string? Find()
     {
@@ -27,10 +33,12 @@ internal static class CoreProvider
         string packaged = Path.Combine(AppPaths.InstallDir, "core", CoreExeName);
         if (File.Exists(packaged)) return packaged;
 
-        string local = Path.Combine(AppPaths.Core, CoreExeName);
+        string local = Path.Combine(LocalDir, CoreExeName);
         if (File.Exists(local)) return local;
 
-        return null;
+        // Installs made before the core folders were split.
+        string legacy = Path.Combine(AppPaths.Core, CoreExeName);
+        return File.Exists(legacy) ? legacy : null;
     }
 
     /// <summary>Find the core, downloading it on first use. <paramref name="progress"/> receives status text.</summary>
@@ -118,10 +126,10 @@ internal static class CoreProvider
                 ?? throw new InvalidOperationException($"{CoreExeName} was not found inside the downloaded archive.");
 
             string sourceDir = Path.GetDirectoryName(exe)!;
-            if (Directory.Exists(AppPaths.Core)) Directory.Delete(AppPaths.Core, recursive: true);
-            CopyTree(sourceDir, AppPaths.Core);
+            if (Directory.Exists(LocalDir)) Directory.Delete(LocalDir, recursive: true);
+            CopyTree(sourceDir, LocalDir);
 
-            return Path.Combine(AppPaths.Core, CoreExeName);
+            return Path.Combine(LocalDir, CoreExeName);
         }
         finally
         {

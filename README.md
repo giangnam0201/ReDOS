@@ -62,6 +62,44 @@ When you run a DOS program from outside the sandbox, ReDOS imports it into `C:\P
 everything the program writes stays in one place and survives. Use `--no-import` to leave it where
 it is and mount its folder as drive D: instead.
 
+## Floppy disks
+
+Old software came on floppies, and ReDOS reads the images directly. There are two ways in.
+
+**Unpack the disks — no installer, works in a terminal:**
+
+```
+redos import "Word 4 disk1.img" "Word 4 disk2.img" "Word 4 disk3.img"
+redos import "C:\Downloads\Microsoft Word 4.0 for DOS"      # or just point at the folder
+```
+
+ReDOS reads the FAT12/FAT16 filesystem itself, unpacks every disk into one sandbox program folder
+(later disks overlay earlier ones, exactly as a real install would), and works out which executable
+is the program rather than picking the first one alphabetically. Most DOS-era software shipped as
+plain files, so this usually replaces running SETUP entirely:
+
+```
+Unpacked 5 disk(s), 106 file(s), into C:\PROGRAMS\WORD4.
+No installer needed - run it with:  redos run WORD.COM
+```
+
+**Or mount them and run the real installer:**
+
+```
+redos mount "C:\Downloads\Microsoft Word 4.0 for DOS"
+```
+
+This opens a DOS machine with the disks in **drive A:** and your sandbox as **C:**, sitting at the
+A: prompt ready for `SETUP` or `INSTALL`. Multiple disks become one swappable set — **Ctrl+F4**
+changes disk when the installer asks for the next one. Disks are ordered by title and then by
+number, so a "Word 4 Learn" set never interleaves with the "Word 4" one.
+
+Mounting always uses the graphical core: a disk image is a filesystem, and the console core only
+knows about real Windows drives. Install there once, then run the installed program from a terminal
+like anything else. Add `--extract` to unpack instead of booting.
+
+Recognised image types: `.img`, `.ima`, `.vfd`, `.flp`, `.dsk`, `.360`, `.720`, `.144`.
+
 ## Dependencies
 
 DOS programs do not declare what they need; they just open `GAME.DAT` and crash if it is missing.

@@ -107,6 +107,9 @@ internal static class Sandbox
         Ensure();
 
         string source = Path.GetFullPath(executablePath);
+        if (!File.Exists(source))
+            throw new FileNotFoundException($"There is no file at {source}.", source);
+
         string sourceDir = Path.GetDirectoryName(source) ?? throw new InvalidOperationException("No containing folder.");
         bool copyFolder = ShouldCopyWholeFolder(sourceDir);
 
@@ -133,17 +136,66 @@ internal static class Sandbox
         }
 
         Directory.CreateDirectory(destination);
-        if (copyFolder)
+        try
         {
-            CopyTree(sourceDir, destination);
-            AppPaths.Log($"imported folder {sourceDir} -> {destination}");
-            return new ImportResult(destinationExe, name, WasAlreadyPresent: false, SupportFilesCopied: 0);
+            if (copyFolder)
+            {
+                CopyTree(sourceDir, destination);
+                AppPaths.Log($"imported folder {sourceDir} -> {destination}");
+                return new ImportResult(destinationExe, name, WasAlreadyPresent: false, SupportFilesCopied: 0);
+            }
+
+            File.Copy(source, destinationExe, overwrite: false);
+            int copied = HarvestSupportFiles(destinationExe, sourceDir, destination);
+            AppPaths.Log($"imported {source} -> {destinationExe} (+{copied} support files)");
+            return new ImportResult(destinationExe, name, WasAlreadyPresent: false, copied);
+        }
+        catch
+        {
+            // Do not leave a half-made program behind for the user to clean up.
+            try
+            {
+                if (!Directory.EnumerateFileSystemEntries(destination).Any()) Directory.Delete(destination);
+            }
+            catch (IOException) { /* best effort */ }
+
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Unpack a set of floppy images straight into the sandbox. Many DOS programs were shipped as
+    /// plain files on disk, so this often replaces running the installer entirely — and unlike an
+    /// installer it works in a terminal session.
+    /// </summary>
+    internal static ImportResult ImportImages(IReadOnlyList<string> images, string? preferredName = null)
+    {
+        Ensure();
+        if (images.Count == 0) throw new ArgumentException("No images given.", nameof(images));
+
+        var ordered = FloppyImage.SortSet(images);
+        string identity = Path.GetFullPath(ordered[0]);
+
+        string? name = LookupImportedName(identity);
+        if (name is null || !Directory.Exists(Path.Combine(ProgramsDir, name)))
+        {
+            name = MakeProgramName(preferredName ?? FloppyImage.SetName(ordered[0]));
+            RecordImportedName(identity, name);
         }
 
-        File.Copy(source, destinationExe, overwrite: false);
-        int copied = HarvestSupportFiles(destinationExe, sourceDir, destination);
-        AppPaths.Log($"imported {source} -> {destinationExe} (+{copied} support files)");
-        return new ImportResult(destinationExe, name, WasAlreadyPresent: false, copied);
+        string destination = Path.Combine(ProgramsDir, name);
+        bool existed = Directory.Exists(destination) && Directory.EnumerateFileSystemEntries(destination).Any();
+        Directory.CreateDirectory(destination);
+
+        int files = 0;
+        foreach (string image in ordered)
+        {
+            // Disks in a set overlay one another, exactly as they would after a real install.
+            files += FloppyImage.Extract(image, destination);
+            AppPaths.Log($"extracted {image} -> {destination}");
+        }
+
+        return new ImportResult(PickMainExecutable(destination, name) ?? destination, name, existed, files);
     }
 
     /// <summary>
@@ -286,6 +338,55 @@ internal static class Sandbox
         return unique;
     }
 
+    /// <summary>Names that are almost never the program you actually want to launch.</summary>
+    private static readonly string[] SecondaryNames =
+        ["SETUP", "INSTALL", "INSTAL", "UNINST", "README", "CONFIG", "DOWN", "UPDATE", "PATCH", "DEMO", "TEST"];
+
+    /// <summary>
+    /// Guess which executable in a program folder is the program. Extracting a disk set leaves
+    /// dozens of binaries lying around, so the alphabetically first one is rarely the right answer.
+    /// </summary>
+    internal static string? PickMainExecutable(string directory, string programName)
+    {
+        List<string> candidates;
+        try
+        {
+            candidates = Directory
+                .EnumerateFiles(directory, "*", SearchOption.AllDirectories)
+                .Where(f => DosDetector.IsDosKind(DosDetector.Detect(f)))
+                .ToList();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+
+        if (candidates.Count == 0) return null;
+
+        string wanted = programName.TrimEnd('0', '1', '2', '3', '4', '5', '6', '7', '8', '9');
+
+        return candidates
+            .OrderByDescending(path =>
+            {
+                string stem = Path.GetFileNameWithoutExtension(path).ToUpperInvariant();
+                int score = 0;
+
+                if (stem.Equals(programName, StringComparison.OrdinalIgnoreCase)) score += 20;
+                else if (wanted.Length > 2 && stem.StartsWith(wanted, StringComparison.OrdinalIgnoreCase)) score += 15;
+                else if (wanted.Length > 2 && wanted.StartsWith(stem, StringComparison.OrdinalIgnoreCase)) score += 12;
+
+                if (SecondaryNames.Contains(stem)) score -= 10;
+
+                // A program that ships as both .COM and .EXE usually launches from the root folder.
+                if (Path.GetDirectoryName(path)!.Equals(directory, StringComparison.OrdinalIgnoreCase)) score += 3;
+                if (Path.GetExtension(path).Equals(".com", StringComparison.OrdinalIgnoreCase)) score += 1;
+
+                return score;
+            })
+            .ThenByDescending(path => new FileInfo(path).Length)
+            .First();
+    }
+
     internal record InstalledProgram(string Name, string Directory, string? Executable, long SizeBytes, DateTime Modified);
 
     internal static IReadOnlyList<InstalledProgram> ListPrograms()
@@ -297,14 +398,11 @@ internal static class Sandbox
         {
             var info = new DirectoryInfo(dir);
             long size = 0;
-            string? exe = null;
+            string? exe = PickMainExecutable(dir, info.Name);
             try
             {
                 foreach (var file in info.EnumerateFiles("*", SearchOption.AllDirectories))
-                {
                     size += file.Length;
-                    if (exe is null && DosDetector.IsDosKind(DosDetector.Detect(file.FullName))) exe = file.FullName;
-                }
             }
             catch (UnauthorizedAccessException)
             {

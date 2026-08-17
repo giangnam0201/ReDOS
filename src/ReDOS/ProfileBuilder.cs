@@ -20,6 +20,12 @@ internal sealed record LaunchPlan
     /// <summary>Keep the machine open after the program ends instead of closing the window.</summary>
     internal bool StayOpen { get; init; }
 
+    /// <summary>Floppy images to put in drive A:. Several become a swappable set (Ctrl+F4).</summary>
+    internal IReadOnlyList<string> FloppyImages { get; init; } = [];
+
+    /// <summary>Start on drive A: — what you want when installing from disk 1.</summary>
+    internal bool StartOnFloppy { get; init; }
+
     internal string Title { get; init; } = "ReDOS";
 }
 
@@ -80,8 +86,27 @@ internal static class ProfileBuilder
         if (plan.ExternalMount is not null)
             conf.AppendLine($"mount d \"{plan.ExternalMount}\" -q");
 
+        if (plan.FloppyImages.Count > 0)
+        {
+            // Several images on one drive become a swappable set: Ctrl+F4 changes disk.
+            var images = plan.FloppyImages.Select(image => $"\"{image}\"");
+            conf.AppendLine($"imgmount a {string.Join(' ', images)} -t floppy");
+        }
+
         conf.AppendLine("c:");
         conf.AppendLine("if exist C:\\AUTOEXEC.BAT call C:\\AUTOEXEC.BAT");
+
+        if (plan.StartOnFloppy)
+        {
+            conf.AppendLine("a:");
+            conf.AppendLine("echo.");
+            conf.AppendLine("echo Drive A: holds the floppy. C: is your ReDOS sandbox.");
+            if (plan.FloppyImages.Count > 1)
+                conf.AppendLine($"echo {plan.FloppyImages.Count} disks loaded - press Ctrl+F4 to change disk.");
+            conf.AppendLine("echo Run SETUP or INSTALL to install to C:.");
+            conf.AppendLine("echo.");
+            conf.AppendLine("dir /w");
+        }
 
         if (plan.ProgramPath is not null)
         {
